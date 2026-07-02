@@ -109,6 +109,7 @@ window.marked = window.marked || { parse: function(t){ return t.replace(/&/g,'&a
   .badge-code_debugging   { background: #4d2020; color: #f85149; }
   .badge-ui_testing       { background: #1a3a5e; color: #58a6ff; }
   .badge-content_analysis { background: #3b2d0e; color: #d29922; }
+  .badge-interview_qa     { background: #2d1f4e; color: #bc8cff; }
   .card-meta { color: #8b949e; font-size: 12px; margin-left: auto; }
   .card-body {
     padding: 16px;
@@ -252,6 +253,10 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
             "Code with errors is visible on screen. "
             "Output ONLY the corrected code with the bugs fixed. "
             "Add a one-line comment on each changed line explaining the fix. No other text."
+        ),
+        "interview_qa": (
+            "An interview question is visible on screen. "
+            "Output ONLY the direct answer. No preamble, no explanation, no restating the question."
         ),
     }
 
@@ -401,15 +406,21 @@ def _run_uvicorn(ui_port: int) -> None:
     # schedule broadcasts into it via run_coroutine_threadsafe.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    config = uvicorn.Config(
+        _ui_app,
+        host="0.0.0.0",
+        port=ui_port,
+        log_level="info",
+        ws="websockets",
+        loop="none",  # use the loop we created above
+    )
+    server = uvicorn.Server(config)
+
+    # Store the loop AFTER uvicorn is configured so broadcasts go to the right loop
     _ui_loop = loop
     try:
-        uvicorn.run(
-            _ui_app,
-            host="0.0.0.0",
-            port=ui_port,
-            log_level="info",
-            ws="websockets",
-        )
+        loop.run_until_complete(server.serve())
     finally:
         _ui_loop = None
 
