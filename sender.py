@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer()
 
+SPACE_DEBOUNCE_SECONDS = 5  # Minimum seconds between space-triggered captures
+
 # Global state
 class SenderState:
     def __init__(self):
@@ -39,6 +41,7 @@ class SenderState:
         self.skipped_count = 0
         self.trigger = asyncio.Event()   # Set when SPACE is pressed
         self.loop: asyncio.AbstractEventLoop | None = None
+        self._last_space_time: float = 0.0  # Timestamp of last accepted SPACE press
 
 
 def capture_screenshot() -> bytes:
@@ -131,6 +134,13 @@ def start_hotkey_listener(state: SenderState) -> None:
     """
     def on_press(key: keyboard.Key) -> None:
         if key == keyboard.Key.space and state.loop is not None:
+            now = time.time()
+            elapsed = now - state._last_space_time
+            if elapsed < SPACE_DEBOUNCE_SECONDS:
+                remaining = SPACE_DEBOUNCE_SECONDS - elapsed
+                logger.debug(f"⏳ SPACE debounced — {remaining:.1f}s remaining before next capture")
+                return
+            state._last_space_time = now
             # Thread-safe: schedule the event set on the asyncio loop
             state.loop.call_soon_threadsafe(state.trigger.set)
 
