@@ -1,0 +1,10 @@
+grpcio==1.60.0
+grpcio-tools==1.60.0
+mss==9.0.1
+typer==0.9.0
+Pillow==10.1.0
+pyyaml==6.0.1
+cryptography==41.0.7
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+websockets==12.0

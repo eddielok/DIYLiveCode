@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package capture;
+
+service ScreenAnalyzer {
+  rpc AnalyzeScreen(ScreenCapture) returns (AnalysisResult);
+}
+
+message ScreenCapture {
+  bytes image_data = 1;
+  string mission = 2;
+  int64 timestamp = 3;
+  string input_hash = 4;
+}
+
+message AnalysisResult {
+  string output = 1;
+  bool is_duplicate = 2;
+  string output_hash = 3;
+  int64 processing_time_ms = 4;
+}

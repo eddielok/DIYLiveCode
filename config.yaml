@@ -1,0 +1,21 @@
+sender:
+  interval: 1.0 # seconds between captures
+  capture_quality: 90 # JPEG quality (1-100)
+  max_width: 1280 # resize width for bandwidth
+  max_retries: 3 # retry failed sends
+
+deduplication:
+  cache_size: 100 # rolling window of hashes
+  ttl: 300 # cache TTL in seconds
+
+missions:
+  coding_challenge: "Analyze code on screen"
+  ui_testing: "Test UI rendering"
+  content_analysis: "Summarize content"
+  code_debugging: "Debug code errors and exceptions on screen"
+  interview_qa: "Answer interview questions visible on screen"
+
+# Fallback config (CLI input overrides this)
+default_receiver:
+  ip: "192.168.1.100"
+  port: 50051
