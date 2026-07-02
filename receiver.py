@@ -218,6 +218,14 @@ async def ui_websocket(websocket: WebSocket):
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _load_context_file(filename: str) -> str:
+    """Load a markdown context file from the same directory as this script."""
+    path = Path(__file__).parent / filename
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
 class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
     """gRPC service for screen analysis."""
     
@@ -226,6 +234,30 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
         self.analysis_count = 0
         self.duplicate_output_count = 0
         self._busy = False  # True while analysis is in progress
+
+        # Load CV and JD context once at startup
+        cv_content = _load_context_file("CV.md")
+        jd_content = _load_context_file("JD.md")
+        context_block = ""
+        if cv_content:
+            context_block += f"\n\n--- CANDIDATE CV ---\n{cv_content}"
+        if jd_content:
+            context_block += f"\n\n--- JOB DESCRIPTION ---\n{jd_content}"
+
+        self._interview_qa_prompt = (
+            "You are helping a candidate answer interview questions in real time.\n"
+            "Use the candidate's CV and the job description below as context to give "
+            "tailored, specific answers that align the candidate's experience with the role.\n"
+            + context_block +
+            "\n\n---\n"
+            "An interview question is visible on screen. "
+            "Output ONLY the direct answer, drawing on the candidate's background above where relevant. "
+            "No preamble, no explanation, no restating the question."
+        )
+        if context_block:
+            logger.info("Loaded CV and JD context for interview_qa mission.")
+        else:
+            logger.warning("No CV.md or JD.md found — interview_qa will run without context.")
     
     def _save_image(self, image_data: bytes) -> str:
         """Save image data to temp file and return path.""" 
@@ -263,7 +295,11 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
     def _analyze_with_openclaw(self, image_path: str, mission: str) -> str:
         """Call OpenClaw CLI and return output."""
         try:
-            prompt = self.MISSION_PROMPTS.get(mission, f"Analyze the screen for: {mission}")
+            # Use the context-enriched prompt for interview_qa, static prompts for everything else
+            if mission == "interview_qa":
+                prompt = self._interview_qa_prompt
+            else:
+                prompt = self.MISSION_PROMPTS.get(mission, f"Analyze the screen for: {mission}")
             cmd = [
                 "openclaw", "infer", "model", "run",
                 "--file", image_path,
