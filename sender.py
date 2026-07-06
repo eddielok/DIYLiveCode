@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Sender: Captures screen and sends to receiver(s) for analysis.
-Press Control+SPACE (globally, even when unfocused) to trigger a capture.
-Includes deduplication and interactive IP/name configuration.
+Auto-captures every 15 seconds. Press Control+SPACE to capture immediately
+and reset the 15s timer. Includes deduplication and interactive IP/name configuration.
 """
 
 import asyncio
@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer()
 
-SPACE_DEBOUNCE_SECONDS = 5  # Minimum seconds between hotkey-triggered captures
+AUTO_CAPTURE_INTERVAL = 15  # Seconds between automatic captures
+HOTKEY_DEBOUNCE_SECONDS = 2  # Minimum seconds between manual hotkey presses
 
 # Global state
 class SenderState:
@@ -39,10 +40,11 @@ class SenderState:
         self.input_hashes = deque(maxlen=100)  # Recent hashes
         self.capture_count = 0
         self.skipped_count = 0
-        self.trigger = asyncio.Event()   # Set when Control+SPACE is pressed
+        self.trigger = asyncio.Event()   # Set when Control+SPACE is pressed or timer fires
         self.loop: asyncio.AbstractEventLoop | None = None
-        self._last_space_time: float = 0.0  # Timestamp of last accepted hotkey press
-        self._ctrl_pressed: bool = False    # Track whether Control key is held
+        self._last_hotkey_time: float = 0.0  # Timestamp of last accepted hotkey press
+        self._ctrl_pressed: bool = False     # Track whether Control key is held
+        self._reset_timer: bool = False      # Flag to reset the auto-capture timer
 
 
 def capture_screenshot() -> bytes:
@@ -131,7 +133,7 @@ async def send_to_receiver(
 def start_hotkey_listener(state: SenderState) -> None:
     """
     Listen for Control+SPACE globally in a background thread.
-    When pressed, signals the async capture loop via state.trigger.
+    When pressed, triggers an immediate capture and resets the auto-capture timer.
     """
     def on_press(key: keyboard.Key) -> None:
         # Track Control key state
@@ -141,12 +143,13 @@ def start_hotkey_listener(state: SenderState) -> None:
 
         if key == keyboard.Key.space and state._ctrl_pressed and state.loop is not None:
             now = time.time()
-            elapsed = now - state._last_space_time
-            if elapsed < SPACE_DEBOUNCE_SECONDS:
-                remaining = SPACE_DEBOUNCE_SECONDS - elapsed
-                logger.debug(f"⏳ Control+SPACE debounced — {remaining:.1f}s remaining before next capture")
+            elapsed = now - state._last_hotkey_time
+            if elapsed < HOTKEY_DEBOUNCE_SECONDS:
+                remaining = HOTKEY_DEBOUNCE_SECONDS - elapsed
+                logger.debug(f"⏳ Control+SPACE debounced — {remaining:.1f}s remaining")
                 return
-            state._last_space_time = now
+            state._last_hotkey_time = now
+            state._reset_timer = True  # Signal the capture loop to reset its timer
             # Thread-safe: schedule the event set on the asyncio loop
             state.loop.call_soon_threadsafe(state.trigger.set)
 
@@ -158,14 +161,14 @@ def start_hotkey_listener(state: SenderState) -> None:
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.daemon = True
     listener.start()
-    logger.info("⌨️  Global hotkey listener started — press Control+SPACE anywhere to capture")
+    logger.info("⌨️  Global hotkey listener started — press Control+SPACE anywhere to capture immediately")
 
 
 async def capture_loop(
     target: str,
     mission: str,
 ) -> None:
-    """Wait for SPACE press, then capture and send."""
+    """Auto-capture every 15s, or immediately when Control+SPACE is pressed (resets timer)."""
     state = SenderState()
     state.loop = asyncio.get_running_loop()
 
@@ -176,16 +179,28 @@ async def capture_loop(
         f"Ready.\n"
         f"  Target : {target}\n"
         f"  Mission: {mission}\n"
-        f"  Press Control+SPACE (anywhere) to capture and analyse. Ctrl+C to quit."
+        f"  Auto-capturing every {AUTO_CAPTURE_INTERVAL}s. Press Control+SPACE to capture immediately and reset timer. Ctrl+C to quit."
     )
 
     try:
         while True:
-            # Wait until SPACE is pressed
-            await state.trigger.wait()
-            state.trigger.clear()
+            # Wait for either the auto-capture interval or a manual hotkey trigger
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(state.trigger.wait()),
+                    timeout=AUTO_CAPTURE_INTERVAL
+                )
+                # Hotkey was pressed
+                state.trigger.clear()
+                if state._reset_timer:
+                    state._reset_timer = False
+                    logger.info("📸 Control+SPACE pressed — capturing screen (timer reset)...")
+                else:
+                    logger.info("📸 Control+SPACE pressed — capturing screen...")
+            except asyncio.TimeoutError:
+                # Auto-capture interval elapsed
+                logger.info(f"⏱  Auto-capture triggered (every {AUTO_CAPTURE_INTERVAL}s)...")
 
-            logger.info("📸 Control+SPACE pressed — capturing screen...")
             image_data = capture_screenshot()
             input_hash = hash_data(image_data)
             state.capture_count += 1
@@ -210,17 +225,18 @@ def start(
     ),
     mission: str = typer.Option(
         "coding_challenge",
-        prompt="Select mission (1=coding_challenge, 2=ui_testing, 3=content_analysis, 4=code_debugging, 5=interview_qa)",
+        prompt="Select mission (1=coding_challenge, 2=ui_testing, 3=content_analysis, 4=code_debugging, 5=interview_qa, 6=online_test)",
         help="Type of analysis to perform"
     ),
 ) -> None:
-    """Start sender — press Control+SPACE globally to trigger a screen capture."""
+    """Start sender — auto-captures every 15s, or press Control+SPACE to capture immediately."""
     mission_map = {
         "1": "coding_challenge",
         "2": "ui_testing",
         "3": "content_analysis",
         "4": "code_debugging",
         "5": "interview_qa",
+        "6": "online_test",
     }
     mission = mission_map.get(mission.strip(), mission)
     asyncio.run(capture_loop(target, mission))

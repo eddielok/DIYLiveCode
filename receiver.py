@@ -110,6 +110,7 @@ window.marked = window.marked || { parse: function(t){ return t.replace(/&/g,'&a
   .badge-ui_testing       { background: #1a3a5e; color: #58a6ff; }
   .badge-content_analysis { background: #3b2d0e; color: #d29922; }
   .badge-interview_qa     { background: #2d1f4e; color: #bc8cff; }
+  .badge-online_test      { background: #1e3a3a; color: #39d0d8; }
   .card-meta { color: #8b949e; font-size: 12px; margin-left: auto; }
   .card-body {
     padding: 16px;
@@ -285,6 +286,19 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
             "Code with errors is visible on screen. "
             "Output ONLY the corrected code with the bugs fixed. "
             "Add a one-line comment on each changed line explaining the fix. No other text."
+        ),
+        "online_test": (
+            "This is an online technical test covering Coding & Debugging, Agentic AI & LLM Patterns, "
+            "System Design & Architecture, and general technical questions.\n"
+            "A question or problem is visible on screen. Analyse it carefully and provide a thorough answer.\n"
+            "- For coding/debugging questions: output the complete corrected or working code in a code block, "
+            "with brief inline comments explaining key decisions.\n"
+            "- For Agentic AI & LLM questions: explain the concept clearly, describe relevant patterns "
+            "(e.g. ReAct, tool-use, memory, orchestration), and give a concrete example.\n"
+            "- For System Design questions: outline the architecture with components, data flow, "
+            "scalability considerations, and trade-offs.\n"
+            "- For general technical questions: give a precise, well-structured answer with examples.\n"
+            "Output a clear, well-structured answer. No preamble, no restating the question."
         ),
         "interview_qa": (
             "You are helping a candidate answer interview questions. "
