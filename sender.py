@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Sender: Captures screen and sends to receiver(s) for analysis.
-Press SPACE (globally, even when unfocused) to trigger a capture.
+Press Control+SPACE (globally, even when unfocused) to trigger a capture.
 Includes deduplication and interactive IP/name configuration.
 """
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer()
 
-SPACE_DEBOUNCE_SECONDS = 5  # Minimum seconds between space-triggered captures
+SPACE_DEBOUNCE_SECONDS = 5  # Minimum seconds between hotkey-triggered captures
 
 # Global state
 class SenderState:
@@ -39,9 +39,10 @@ class SenderState:
         self.input_hashes = deque(maxlen=100)  # Recent hashes
         self.capture_count = 0
         self.skipped_count = 0
-        self.trigger = asyncio.Event()   # Set when SPACE is pressed
+        self.trigger = asyncio.Event()   # Set when Control+SPACE is pressed
         self.loop: asyncio.AbstractEventLoop | None = None
-        self._last_space_time: float = 0.0  # Timestamp of last accepted SPACE press
+        self._last_space_time: float = 0.0  # Timestamp of last accepted hotkey press
+        self._ctrl_pressed: bool = False    # Track whether Control key is held
 
 
 def capture_screenshot() -> bytes:
@@ -129,25 +130,35 @@ async def send_to_receiver(
 
 def start_hotkey_listener(state: SenderState) -> None:
     """
-    Listen for SPACE key globally in a background thread.
+    Listen for Control+SPACE globally in a background thread.
     When pressed, signals the async capture loop via state.trigger.
     """
     def on_press(key: keyboard.Key) -> None:
-        if key == keyboard.Key.space and state.loop is not None:
+        # Track Control key state
+        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            state._ctrl_pressed = True
+            return
+
+        if key == keyboard.Key.space and state._ctrl_pressed and state.loop is not None:
             now = time.time()
             elapsed = now - state._last_space_time
             if elapsed < SPACE_DEBOUNCE_SECONDS:
                 remaining = SPACE_DEBOUNCE_SECONDS - elapsed
-                logger.debug(f"⏳ SPACE debounced — {remaining:.1f}s remaining before next capture")
+                logger.debug(f"⏳ Control+SPACE debounced — {remaining:.1f}s remaining before next capture")
                 return
             state._last_space_time = now
             # Thread-safe: schedule the event set on the asyncio loop
             state.loop.call_soon_threadsafe(state.trigger.set)
 
-    listener = keyboard.Listener(on_press=on_press)
+    def on_release(key: keyboard.Key) -> None:
+        # Clear Control key state on release
+        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            state._ctrl_pressed = False
+
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.daemon = True
     listener.start()
-    logger.info("⌨️  Global hotkey listener started — press SPACE anywhere to capture")
+    logger.info("⌨️  Global hotkey listener started — press Control+SPACE anywhere to capture")
 
 
 async def capture_loop(
@@ -165,7 +176,7 @@ async def capture_loop(
         f"Ready.\n"
         f"  Target : {target}\n"
         f"  Mission: {mission}\n"
-        f"  Press SPACE (anywhere) to capture and analyse. Ctrl+C to quit."
+        f"  Press Control+SPACE (anywhere) to capture and analyse. Ctrl+C to quit."
     )
 
     try:
@@ -174,7 +185,7 @@ async def capture_loop(
             await state.trigger.wait()
             state.trigger.clear()
 
-            logger.info("📸 SPACE pressed — capturing screen...")
+            logger.info("📸 Control+SPACE pressed — capturing screen...")
             image_data = capture_screenshot()
             input_hash = hash_data(image_data)
             state.capture_count += 1
@@ -203,7 +214,7 @@ def start(
         help="Type of analysis to perform"
     ),
 ) -> None:
-    """Start sender — press SPACE globally to trigger a screen capture."""
+    """Start sender — press Control+SPACE globally to trigger a screen capture."""
     mission_map = {
         "1": "coding_challenge",
         "2": "ui_testing",
