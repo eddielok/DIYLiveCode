@@ -1,20 +1,32 @@
 #!/usr/bin/env python3
 """
-Receiver: Listens for screen captures and analyzes them using OpenClaw CLI.
-Handles deduplication and outputs results.
+Receiver: Listens for screen captures and analyzes them.
+Backend: Tesseract OCR (local) + DeepSeek-V3 text API
+  - OCR:      ~200–500 ms  (local, no network)
+  - DeepSeek: ~1–4 s       (direct HTTPS, text-only)
+  - Total:    ~2–5 s       vs OpenClaw CLI's 30–200 s
 """
 
 import os
 os.environ["GRPC_VERBOSITY"] = "NONE"  # Suppress gRPC C-core internal logs
+
+# ── DeepSeek API key ──────────────────────────────────────────────────────────
+DEEPSEEK_API_KEY = os.environ.get(
+    "DEEPSEEK_API_KEY",
+    "sk-eaee32094c334072a665ffe010fdaac0"   # fallback hard-coded key
+)
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_MODEL   = "deepseek-chat"          # deepseek-chat = DeepSeek-V3 (text API, no vision)
+# ─────────────────────────────────────────────────────────────────────────────
 
 import asyncio
 import hashlib
 import io
 import json
 import logging
-import subprocess
-import tempfile
 import time
+import urllib.request
+import urllib.error
 from collections import deque
 from pathlib import Path
 
@@ -23,6 +35,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import uvicorn
 from PIL import Image
+import pytesseract
 from typing import Optional
 
 import capture_pb2
@@ -259,12 +272,6 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
         else:
             logger.warning("No CV.md or JD.md found — interview_qa will run without context.")
     
-    def _save_image(self, image_data: bytes) -> str:
-        """Save image data to temp file and return path.""" 
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-            f.write(image_data)
-            return f.name
-    
     MISSION_PROMPTS = {
         "coding_challenge": (
             "A coding challenge is visible on screen. "
@@ -310,61 +317,89 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
         ),
     }
 
-    def _analyze_with_openclaw(self, image_path: str, mission: str) -> str:
-        """Call OpenClaw CLI and return output."""
+    def _ocr_image(self, image_data: bytes) -> str:
+        """Extract text from image bytes using Tesseract OCR.
+        
+        Typical latency: 200–500 ms locally.
+        """
+        img = Image.open(io.BytesIO(image_data))
+        # Upscale small images for better OCR accuracy
+        w, h = img.size
+        if w < 1280:
+            scale = 1280 / w
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        text = pytesseract.image_to_string(img, lang="eng")
+        return text.strip()
+
+    def _analyze_with_ocr_deepseek(self, image_data: bytes, mission: str) -> str:
+        """OCR the screenshot locally, then send extracted text to DeepSeek API.
+
+        Pipeline:
+          1. Tesseract OCR  (~200–500 ms, local, no network)
+          2. DeepSeek-V3 text API  (~1–4 s, one direct HTTPS call)
+        Total: ~2–5 s  vs OpenClaw CLI's 30–200 s
+        """
         try:
-            # Use the context-enriched prompt for interview_qa, static prompts for everything else
+            # Step 1 — OCR
+            ocr_start = time.time()
+            screen_text = self._ocr_image(image_data)
+            ocr_ms = int((time.time() - ocr_start) * 1000)
+
+            if not screen_text:
+                return "Error: OCR extracted no text from the screenshot."
+
+            logger.info(f"OCR complete in {ocr_ms} ms — {len(screen_text)} chars extracted")
+
+            # Step 2 — build prompt
             if mission == "interview_qa":
-                prompt = self._interview_qa_prompt
+                system_prompt = self._interview_qa_prompt
             else:
-                prompt = self.MISSION_PROMPTS.get(mission, f"Analyze the screen for: {mission}")
-            cmd = [
-                "openclaw", "infer", "model", "run",
-                "--file", image_path,
-                "--prompt", prompt,
-                "--model", "xiaomi-token-plan/mimo-v2.5",
-                "--json",
-            ]
+                system_prompt = self.MISSION_PROMPTS.get(
+                    mission, f"Analyze the screen content for: {mission}"
+                )
 
-            # NODE_NO_WARNINGS suppresses the TLS warning openclaw emits to stderr
-            env = os.environ.copy()
-            env["NODE_NO_WARNINGS"] = "1"
+            user_message = f"Here is the text extracted from the screen:\n\n```\n{screen_text}\n```"
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=210,  # must exceed --timeout-ms (200s) + buffer
-                env=env,
+            # Step 3 — call DeepSeek text API
+            payload = json.dumps({
+                "model": DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_message},
+                ],
+                "max_tokens": 2048,
+                "temperature": 0.0,  # deterministic — best for code/analysis
+                "stream": False,
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                DEEPSEEK_API_URL,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                },
+                method="POST",
             )
 
-            # Strip known Node.js TLS warning from stderr (openclaw emits this harmlessly)
-            stderr_clean = "\n".join(
-                line for line in (result.stderr or "").splitlines()
-                if "NODE_TLS_REJECT_UNAUTHORIZED" not in line
-                and "Use node --trace-warnings" not in line
-            ).strip()
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
 
-            if result.returncode != 0:
-                error_msg = stderr_clean or f"OpenClaw failed with code {result.returncode}"
-                logger.error(f"OpenClaw error: {error_msg}")
-                return f"Error: {error_msg}"
+            result_text = body["choices"][0]["message"]["content"].strip()
+            usage = body.get("usage", {})
+            logger.info(
+                f"DeepSeek usage — prompt: {usage.get('prompt_tokens','?')} tokens, "
+                f"completion: {usage.get('completion_tokens','?')} tokens"
+            )
+            return result_text
 
-            # If stdout is empty but we only got the TLS warning, try stderr as fallback
-            stdout = result.stdout.strip()
-            if not stdout and not stderr_clean:
-                return "Error: OpenClaw returned no output"
-
-            data = json.loads(stdout)
-            outputs = data.get("outputs", [])
-            if outputs and outputs[0].get("text"):
-                return outputs[0]["text"].strip()
-            return f"Error: No description returned by OpenClaw"
-        
-        except subprocess.TimeoutExpired:
-            return "Error: OpenClaw analysis timed out (>110s)"
-        except FileNotFoundError:
-            return "Error: OpenClaw CLI not found. Install with: pip install openclaw"
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            logger.error(f"DeepSeek HTTP {e.code}: {err_body}")
+            return f"Error: DeepSeek API returned HTTP {e.code} — {err_body[:200]}"
+        except urllib.error.URLError as e:
+            logger.error(f"DeepSeek network error: {e.reason}")
+            return f"Error: Cannot reach DeepSeek API — {e.reason}"
         except Exception as e:
             return f"Error: {str(e)}"
     
@@ -373,7 +408,7 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
         return hashlib.sha256(data.encode()).hexdigest()
     
     async def AnalyzeScreen(self, request, context):
-        """Process screen capture and analyze with OpenClaw."""
+        """Process screen capture: OCR locally → analyze with DeepSeek text API."""
         if self._busy:
             logger.debug("Receiver busy — telling sender to retry")
             return capture_pb2.AnalysisResult(
@@ -387,10 +422,8 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
         start_time = time.time()
         input_hash = request.input_hash[:8]  # Short hash for logging
         mission = request.mission
-        
+
         try:
-            # Save image
-            image_path = self._save_image(request.image_data)
             self.analysis_count += 1
             logger.info(
                 f"Received capture #{self.analysis_count}\n"
@@ -398,11 +431,11 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
                 f"  Mission: {mission}\n"
                 f"  Image size: {len(request.image_data)} bytes"
             )
-            
-            # Analyze with OpenClaw
-            analysis_output = self._analyze_with_openclaw(image_path, mission)
+
+            # Step 1: OCR locally, Step 2: DeepSeek text API (~2–5 s total)
+            analysis_output = self._analyze_with_ocr_deepseek(request.image_data, mission)
             output_hash = self._hash_data(analysis_output)
-            
+
             # Check for duplicate output
             is_duplicate = output_hash in self.output_hashes
             if is_duplicate:
@@ -415,6 +448,8 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
                     f"Output:\n{analysis_output}\n"
                 )
 
+            processing_time_ms = int((time.time() - start_time) * 1000)
+
             # Broadcast to UI via thread-safe call into uvicorn's event loop.
             payload = {
                 "mission": mission,
@@ -422,18 +457,11 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
                 "output": analysis_output,
                 "is_duplicate": is_duplicate,
                 "output_hash": output_hash,
-                "processing_time_ms": int((time.time() - start_time) * 1000),
+                "processing_time_ms": processing_time_ms,
                 "timestamp": time.time(),
             }
             broadcast_from_grpc(payload)
-            
-            # Calculate processing time
-            processing_time_ms = int((time.time() - start_time) * 1000)
-            
-            # Clean up
-            Path(image_path).unlink(missing_ok=True)
-            
-            # Return result
+
             self._busy = False
             return capture_pb2.AnalysisResult(
                 output=analysis_output,
