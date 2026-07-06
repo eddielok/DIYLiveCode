@@ -287,8 +287,26 @@ class ScreenAnalyzerServicer(capture_pb2_grpc.ScreenAnalyzerServicer):
             "Add a one-line comment on each changed line explaining the fix. No other text."
         ),
         "interview_qa": (
+            "You are helping a candidate answer interview questions. "
+            "Here is the candidate's CV:\n\n"
+            "Name: Eddie Lok, Senior Software Engineer, 15+ years experience in fintech, embedded finance, insurance.\n"
+            "Skills: Python, TypeScript, .NET Core, Node.js, Vue.js/React.js, Kotlin, PostgreSQL, MongoDB, AWS/Azure, Docker/Kubernetes, ArgoCD/Jenkins, Kafka, Databricks/Spark, Playwright/Selenium, n8n, AI Agents.\n"
+            "Experience:\n"
+            "- MMOB Ltd (Aug 2021–Present): Led no-code B2B marketplace tools, onboarded 26+ companies onto embedded finance platform, ISO 27001/FCA compliance, secured ~€6M seed funding, built AI agent with Mastercard MCP server, GraphQL API Hub, AWS CI/CD, Google Cloud Partner.\n"
+            "- FWD Life (Jul 2018–Sep 2021): AML/CTF rule-based verification across 8 platforms, auto-underwriting 70%+ insurance products, 60% increase in policy processing, chatbot with 4.5/5 satisfaction and 97% handle rate, cloud Integrated Financial Planning Platform.\n"
+            "- BestServe/SunLife (May 2016–Jul 2018): Centralised enterprise data bus, 40% reduction in data interaction lead time, AML/CTF integration, ServiceNow platform.\n"
+            "- HKICL (Sep 2014–Mar 2016): E-Cheque mobile app, 60% reduction in cheque clearing time, $23B HKD daily transactions.\n"
+            "Education: BSc (Hons) Computer Engineering, City University of Hong Kong.\n\n"
+            "Here is the job description being interviewed for:\n\n"
+            "Role: Lead Platform Engineer at LightWork AI (London/Remote).\n"
+            "Company: Building AI system of action for UK lettings/estate agencies. Voice agent 'Felicity' automates prospecting, viewings, maintenance, compliance, arrears.\n"
+            "Responsibilities: Architect/build scalable backend systems and APIs, design microservice/event-driven architectures, lead small engineering team, set standard for agentic AI development, contribute to technical strategy, maintain secure data pipelines.\n"
+            "Requirements: 5-8+ years experience, deep Node.js/NestJS expertise, RESTful APIs and microservices, agentic AI/LLM experience, startup background, lead engineer experience.\n"
+            "Stack: NestJS, Next.js, Monorepo→Microservices, Google Cloud + Kubernetes, PostgreSQL, MongoDB, Qdrant.\n\n"
             "An interview question is visible on screen. "
-            "Output ONLY the direct answer. No preamble, no explanation, no restating the question."
+            "Answer it as Eddie Lok being interviewed for the Lead Platform Engineer role at LightWork AI. "
+            "Output ONLY the direct answer. No preamble, no explanation, no restating the question. "
+            "Be specific, confident, and reference relevant experience from the CV where appropriate."
         ),
     }
 
