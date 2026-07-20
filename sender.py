@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Sender: Captures screen and sends to receiver(s) for analysis.
-Auto-captures every 15 seconds. Press Control+SPACE to capture immediately
-and reset the 15s timer. Includes deduplication and interactive IP/name configuration.
+Auto-captures every 30 seconds. Press Control+SPACE to capture immediately
+and reset the 30s timer. Includes deduplication and interactive IP/name configuration.
 """
 
 import asyncio
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer()
 
-AUTO_CAPTURE_INTERVAL = 15  # Seconds between automatic captures
+AUTO_CAPTURE_INTERVAL = 30  # Seconds between automatic captures
 HOTKEY_DEBOUNCE_SECONDS = 2  # Minimum seconds between manual hotkey presses
 
 # Global state
@@ -43,7 +43,6 @@ class SenderState:
         self.trigger = asyncio.Event()   # Set when Control+SPACE is pressed or timer fires
         self.loop: asyncio.AbstractEventLoop | None = None
         self._last_hotkey_time: float = 0.0  # Timestamp of last accepted hotkey press
-        self._ctrl_pressed: bool = False     # Track whether Control key is held
         self._reset_timer: bool = False      # Flag to reset the auto-capture timer
 
 
@@ -134,41 +133,41 @@ def start_hotkey_listener(state: SenderState) -> None:
     """
     Listen for Control+SPACE globally in a background thread.
     When pressed, triggers an immediate capture and resets the auto-capture timer.
+
+    macOS note: the process must have Accessibility access granted in
+    System Settings → Privacy & Security → Accessibility.
+    If the shortcut is not responding, grant access and restart the script.
     """
-    def on_press(key: keyboard.Key) -> None:
-        # Track Control key state
-        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
-            state._ctrl_pressed = True
+    def _fire_hotkey():
+        if state.loop is None:
             return
+        now = time.time()
+        elapsed = now - state._last_hotkey_time
+        if elapsed < HOTKEY_DEBOUNCE_SECONDS:
+            remaining = HOTKEY_DEBOUNCE_SECONDS - elapsed
+            logger.debug(f"⏳ Control+SPACE debounced — {remaining:.1f}s remaining")
+            return
+        state._last_hotkey_time = now
+        state._reset_timer = True  # Signal the capture loop to reset its timer
+        # Thread-safe: schedule the event set on the asyncio loop
+        state.loop.call_soon_threadsafe(state.trigger.set)
 
-        if key == keyboard.Key.space and state._ctrl_pressed and state.loop is not None:
-            now = time.time()
-            elapsed = now - state._last_hotkey_time
-            if elapsed < HOTKEY_DEBOUNCE_SECONDS:
-                remaining = HOTKEY_DEBOUNCE_SECONDS - elapsed
-                logger.debug(f"⏳ Control+SPACE debounced — {remaining:.1f}s remaining")
-                return
-            state._last_hotkey_time = now
-            state._reset_timer = True  # Signal the capture loop to reset its timer
-            # Thread-safe: schedule the event set on the asyncio loop
-            state.loop.call_soon_threadsafe(state.trigger.set)
-
-    def on_release(key: keyboard.Key) -> None:
-        # Clear Control key state on release
-        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
-            state._ctrl_pressed = False
-
-    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-    listener.daemon = True
-    listener.start()
+    # Use GlobalHotKeys for reliable cross-platform hotkey detection on macOS.
+    # pynput maps <ctrl> to either left or right Control key automatically.
+    hotkey_listener = keyboard.GlobalHotKeys({
+        "<ctrl>+<space>": _fire_hotkey,
+    })
+    hotkey_listener.daemon = True
+    hotkey_listener.start()
     logger.info("⌨️  Global hotkey listener started — press Control+SPACE anywhere to capture immediately")
+    logger.info("   (macOS: if shortcut is unresponsive, grant Accessibility access in System Settings → Privacy & Security → Accessibility)")
 
 
 async def capture_loop(
     target: str,
     mission: str,
 ) -> None:
-    """Auto-capture every 15s, or immediately when Control+SPACE is pressed (resets timer)."""
+    """Auto-capture every 30s, or immediately when Control+SPACE is pressed (resets timer)."""
     state = SenderState()
     state.loop = asyncio.get_running_loop()
 
@@ -229,7 +228,7 @@ def start(
         help="Type of analysis to perform"
     ),
 ) -> None:
-    """Start sender — auto-captures every 15s, or press Control+SPACE to capture immediately."""
+    """Start sender — auto-captures every 30s, or press Control+SPACE to capture immediately."""
     mission_map = {
         "1": "coding_challenge",
         "2": "ui_testing",
